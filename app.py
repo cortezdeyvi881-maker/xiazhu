@@ -16,22 +16,22 @@ print(f"DEBUG: Bot starting with TOKEN (first 10 chars): {TOKEN[:10]}...")
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-# 所有已知的群组（机器人启动后收到消息就会自动记录）
+# 全局配置（只创建一次，避免重复调用 pytz）
+TZ = pytz.timezone(os.environ.get('WORK_TIMEZONE', 'Asia/Shanghai'))
 active_chats = set()
 last_start_date = {}
 last_pre_end_date = {}
 
-# ====================== 后台定时器（每30秒检查一次） ======================
+# ====================== 后台定时器 ======================
 def background_timer():
     while True:
         try:
-            tz = pytz.timezone(os.environ.get('WORK_TIMEZONE', 'Asia/Shanghai'))
-            now = datetime.now(tz)
+            now = datetime.now(TZ)
             today = now.date()
 
             for chat_id in list(active_chats):
                 try:
-                    # 开始下注提醒
+                    # 开始下注
                     start_h, start_m = map(int, os.environ['WORK_START'].split(':'))
                     if last_start_date.get(chat_id) != today and \
                        (now.hour > start_h or (now.hour == start_h and now.minute >= start_m)):
@@ -44,7 +44,6 @@ def background_timer():
                        (now.hour > pre_end_h or (now.hour == pre_end_h and now.minute >= pre_end_m)):
                         bot.send_message(chat_id, "⛔ 即将结束500以上请勿报入")
                         last_pre_end_date[chat_id] = today
-
                 except:
                     continue
         except:
@@ -57,45 +56,14 @@ threading.Thread(target=background_timer, daemon=True).start()
 # ====================== 消息处理 ======================
 def handle_message(message):
     chat_id = message.chat.id
-    active_chats.add(chat_id)   # 关键：自动记录所有群组
+    active_chats.add(chat_id)   # 自动记录所有群组
 
-    tz = pytz.timezone(os.environ.get('WORK_TIMEZONE', 'Asia/Shanghai'))
-    now = datetime.now(tz)
-
-    # 到期检查
-    try:
-        expiry_str = os.environ.get('EXPIRY_DATE')
-        if expiry_str and now.date() > datetime.strptime(expiry_str, '%Y-%m-%d').date():
-            return
-    except:
-        pass
-
-    # 工作时间检查
-    try:
-        start_h, start_m = map(int, os.environ['WORK_START'].split(':'))
-        end_h, end_m = map(int, os.environ['WORK_END'].split(':'))
-        current_h, current_m = now.hour, now.minute
-        is_work_time = (
-            (current_h > start_h or (current_h == start_h and current_m >= start_m)) and
-            (current_h < end_h or (current_h == end_h and current_m <= end_m))
-        )
-        if not is_work_time:
-            return
-    except:
-        pass
-
-    if message.chat.type not in ['group', 'supergroup'] or message.from_user.is_bot:
-        return
-
-    # 干净转发
-    try:
-        bot.forward_message(
-            chat_id=chat_id,
-            from_chat_id=chat_id,
-            message_id=message.message_id
-        )
-    except:
-        pass
+    # 转发消息（核心功能）
+    if message.chat.type in ['group', 'supergroup'] and not message.from_user.is_bot:
+        try:
+            bot.forward_message(chat_id, chat_id, message.message_id)
+        except:
+            pass
 
 
 # ====================== Webhook ======================
