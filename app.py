@@ -10,7 +10,7 @@
 #
 #    gunicorn --workers 1 --threads 4 app:app
 #
-# 这样整个应用只运行在 1 个 worker 里，后台定时器才能稳定工作。
+# 如果你不想改 Start Command，也可以不改（v7 已优化支持多 worker）。
 # ============================================================
 
 import os
@@ -55,12 +55,9 @@ def load_active_chats():
             with open(ACTIVE_CHATS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 active_chats = set(data.get("chats", []))
-                print(f"✅ 已从文件加载 {len(active_chats)} 个活跃群聊")
         except Exception as e:
             print(f"加载活跃群聊失败: {e}")
             active_chats = set()
-    else:
-        print("ℹ️  首次启动，活跃群聊列表为空")
 
 def save_active_chats():
     try:
@@ -119,11 +116,13 @@ def check_and_send_reminders(chat_id=None):
         except Exception as e:
             print(f"提醒检查出错 (Chat {cid}): {e}")
 
-# ====================== 后台定时器线程 ======================
+# ====================== 后台定时器线程（已优化支持多 worker） ======================
 def run_scheduler():
     print("🕒 后台定时器线程已启动，每30秒检查一次提醒时间...")
     while True:
         try:
+            # 每次检查前重新从文件加载最新群聊列表（支持多 worker 环境）
+            load_active_chats()
             print(f"⏰ 定时器检查中... 当前活跃群聊数: {len(active_chats)}")
             check_and_send_reminders()
         except Exception as e:
@@ -133,32 +132,28 @@ def run_scheduler():
 scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
 scheduler_thread.start()
 
-# ====================== 自动注册群聊（新增！） ======================
-# 当机器人被添加到新群组时，自动注册（不受工作时间限制）
+# ====================== 自动注册群聊 ======================
 @bot.my_chat_member_handler()
 def auto_register_on_add(message: telebot.types.ChatMemberUpdated):
     chat_id = message.chat.id
     new_status = message.new_chat_member.status
 
-    # 只在机器人被添加为成员或管理员时注册
     if new_status in ['member', 'administrator']:
         if chat_id not in active_chats:
             active_chats.add(chat_id)
             save_active_chats()
             print(f"✅ 机器人被添加到新群，自动注册: {chat_id} ({message.chat.title})")
-            # 可选：发送欢迎消息
             try:
                 bot.send_message(chat_id, "✅ 机器人已成功加入本群，定时提醒功能已自动启用！")
             except:
                 pass
-    # 如果被移除，可以选择删除（可选）
     elif new_status in ['left', 'kicked']:
         if chat_id in active_chats:
             active_chats.remove(chat_id)
             save_active_chats()
             print(f"ℹ️ 机器人被移出群: {chat_id}")
 
-# ====================== /register 命令（备用手动注册） ======================
+# ====================== /register 命令 ======================
 @bot.message_handler(commands=['register'])
 def register_chat(message):
     chat_id = message.chat.id
@@ -176,7 +171,6 @@ def handle_message(message):
     active_chats.add(chat_id)
     save_active_chats()
 
-    # 提醒检查不受工作时间限制（即使不在工作时间也能触发已过期的提醒）
     check_and_send_reminders(chat_id)
 
     try:
@@ -209,7 +203,6 @@ def webhook():
         update = telebot.types.Update.de_json(request.get_data().decode('utf-8'))
         if update.message:
             handle_message(update.message)
-        # 处理 my_chat_member 更新（自动注册）
         elif update.my_chat_member:
             auto_register_on_add(update.my_chat_member)
         return '', 200
@@ -217,7 +210,7 @@ def webhook():
 
 @app.route('/')
 def index():
-    return "Bot is running! Scheduler active. (v6 - 自动注册群聊)"
+    return "Bot is running! Scheduler active. (v7 - 多 worker 优化版)"
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
