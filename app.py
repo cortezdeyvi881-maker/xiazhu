@@ -1,3 +1,18 @@
+# ============================================================
+# 重要说明（必须先做这一步！）
+# ============================================================
+# Render 默认使用 Gunicorn 多 worker 模式，导致后台定时器线程不可靠。
+# 请在 Render 控制台执行以下操作：
+#
+# 1. 进入你的服务 → Settings → Build & Deploy
+# 2. 找到 "Start Command"（或 Custom Start Command）
+# 3. 填入以下命令并保存：
+#
+#    gunicorn --workers 1 --threads 4 app:app
+#
+# 这样整个应用只运行在 1 个 worker 里，后台定时器才能稳定工作。
+# ============================================================
+
 import os
 import telebot
 from flask import Flask, request, abort
@@ -25,12 +40,11 @@ bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
 # ====================== 全局变量 ======================
-last_start_date = {}      # chat_id -> date
-last_pre_end_date = {}    # chat_id -> date
+last_start_date = {}
+last_pre_end_date = {}
 active_chats = set()
 
-# ====================== 时区 & 时间配置缓存（关键修复！） ======================
-# 避免在多线程 + Gunicorn 环境下反复调用 pytz.timezone() 导致死锁/超时
+# ====================== 时区 & 时间配置缓存 ======================
 WORK_TIMEZONE_STR = os.environ.get('WORK_TIMEZONE', 'Asia/Shanghai')
 try:
     TZ = pytz.timezone(WORK_TIMEZONE_STR)
@@ -39,7 +53,6 @@ except Exception as e:
     print(f"❌ 时区设置错误，使用 Asia/Shanghai 作为 fallback: {e}")
     TZ = pytz.timezone('Asia/Shanghai')
 
-# 预解析工作时间（避免每次检查都 split + map）
 try:
     START_H, START_M = map(int, os.environ['WORK_START'].split(':'))
     END_H, END_M = map(int, os.environ['WORK_END'].split(':'))
@@ -53,11 +66,7 @@ except Exception as e:
 
 # ====================== 核心提醒函数 ======================
 def check_and_send_reminders(chat_id=None):
-    """
-    检查当前时间是否到达提醒时间点，如果是则发送提醒。
-    使用缓存的 TZ 对象，避免 pytz 死锁问题。
-    """
-    now = datetime.now(TZ)          # ← 使用缓存的时区对象
+    now = datetime.now(TZ)
     today = now.date()
 
     if chat_id is None:
@@ -67,14 +76,12 @@ def check_and_send_reminders(chat_id=None):
 
     for cid in chats_to_check:
         try:
-            # === 开始下注提醒 ===
             if last_start_date.get(cid) != today and \
                (now.hour > START_H or (now.hour == START_H and now.minute >= START_M)):
                 bot.send_message(cid, "✅ 开始下注")
                 last_start_date[cid] = today
                 print(f"[{now.strftime('%H:%M')}] ✅ 已发送：开始下注 → Chat {cid}")
 
-            # === 即将结束提醒 ===
             if last_pre_end_date.get(cid) != today and \
                (now.hour > PRE_END_H or (now.hour == PRE_END_H and now.minute >= PRE_END_M)):
                 bot.send_message(cid, "⛔ 即将结束500以上请勿报入")
@@ -84,18 +91,18 @@ def check_and_send_reminders(chat_id=None):
         except Exception as e:
             print(f"提醒检查出错 (Chat {cid}): {e}")
 
-# ====================== 后台定时器线程 ======================
+# ====================== 后台定时器线程（已优化） ======================
 def run_scheduler():
-    """每60秒检查一次时间，主动发送提醒（无需用户发消息）"""
-    print("🕒 后台定时器线程已启动，每60秒检查一次提醒时间...")
+    print("🕒 后台定时器线程已启动，每30秒检查一次提醒时间...")
     while True:
         try:
+            print(f"⏰ 定时器检查中... 当前活跃群聊数: {len(active_chats)}")
             check_and_send_reminders()
         except Exception as e:
             print(f"定时器出错: {e}")
-        time.sleep(60)
+        time.sleep(30)   # 改为每30秒检查一次，响应更快
 
-# 启动后台线程
+# 启动后台线程（daemon=True）
 scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
 scheduler_thread.start()
 
@@ -104,12 +111,10 @@ def handle_message(message):
     chat_id = message.chat.id
     active_chats.add(chat_id)
 
-    # 1. 先执行提醒检查
     check_and_send_reminders(chat_id)
 
-    # 2. 工作时间检查 + 转发
     try:
-        now = datetime.now(TZ)          # ← 使用缓存的时区对象
+        now = datetime.now(TZ)
         current_h, current_m = now.hour, now.minute
 
         is_work_time = (
@@ -143,7 +148,7 @@ def webhook():
 
 @app.route('/')
 def index():
-    return "Bot is running! Scheduler active. (v2 - pytz cached)"
+    return "Bot is running! Scheduler active. (v3 - 单 worker 模式推荐)"
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
