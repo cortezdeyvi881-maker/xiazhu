@@ -20,6 +20,7 @@ from datetime import datetime
 import pytz
 import threading
 import time
+import json
 
 # ====================== 配置 & 启动打印 ======================
 TOKEN = os.environ.get('TOKEN')
@@ -43,6 +44,33 @@ app = Flask(__name__)
 last_start_date = {}
 last_pre_end_date = {}
 active_chats = set()
+
+# ====================== 持久化活跃群聊（关键修复！） ======================
+ACTIVE_CHATS_FILE = "active_chats.json"
+
+def load_active_chats():
+    global active_chats
+    if os.path.exists(ACTIVE_CHATS_FILE):
+        try:
+            with open(ACTIVE_CHATS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                active_chats = set(data.get("chats", []))
+                print(f"✅ 已从文件加载 {len(active_chats)} 个活跃群聊")
+        except Exception as e:
+            print(f"加载活跃群聊失败: {e}")
+            active_chats = set()
+    else:
+        print("ℹ️  首次启动，活跃群聊列表为空")
+
+def save_active_chats():
+    try:
+        with open(ACTIVE_CHATS_FILE, "w", encoding="utf-8") as f:
+            json.dump({"chats": list(active_chats)}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"保存活跃群聊失败: {e}")
+
+# 启动时加载
+load_active_chats()
 
 # ====================== 时区 & 时间配置缓存 ======================
 WORK_TIMEZONE_STR = os.environ.get('WORK_TIMEZONE', 'Asia/Shanghai')
@@ -91,7 +119,7 @@ def check_and_send_reminders(chat_id=None):
         except Exception as e:
             print(f"提醒检查出错 (Chat {cid}): {e}")
 
-# ====================== 后台定时器线程（已优化） ======================
+# ====================== 后台定时器线程 ======================
 def run_scheduler():
     print("🕒 后台定时器线程已启动，每30秒检查一次提醒时间...")
     while True:
@@ -100,9 +128,8 @@ def run_scheduler():
             check_and_send_reminders()
         except Exception as e:
             print(f"定时器出错: {e}")
-        time.sleep(30)   # 改为每30秒检查一次，响应更快
+        time.sleep(30)
 
-# 启动后台线程（daemon=True）
 scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
 scheduler_thread.start()
 
@@ -110,6 +137,7 @@ scheduler_thread.start()
 def handle_message(message):
     chat_id = message.chat.id
     active_chats.add(chat_id)
+    save_active_chats()   # ← 收到消息后立即保存
 
     check_and_send_reminders(chat_id)
 
@@ -148,7 +176,7 @@ def webhook():
 
 @app.route('/')
 def index():
-    return "Bot is running! Scheduler active. (v3 - 单 worker 模式推荐)"
+    return "Bot is running! Scheduler active. (v4 - 持久化群聊)"
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
