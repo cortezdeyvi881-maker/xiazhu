@@ -45,7 +45,7 @@ last_start_date = {}
 last_pre_end_date = {}
 active_chats = set()
 
-# ====================== 持久化活跃群聊（关键修复！） ======================
+# ====================== 持久化活跃群聊 ======================
 ACTIVE_CHATS_FILE = "active_chats.json"
 
 def load_active_chats():
@@ -133,12 +133,50 @@ def run_scheduler():
 scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
 scheduler_thread.start()
 
+# ====================== 自动注册群聊（新增！） ======================
+# 当机器人被添加到新群组时，自动注册（不受工作时间限制）
+@bot.my_chat_member_handler()
+def auto_register_on_add(message: telebot.types.ChatMemberUpdated):
+    chat_id = message.chat.id
+    new_status = message.new_chat_member.status
+
+    # 只在机器人被添加为成员或管理员时注册
+    if new_status in ['member', 'administrator']:
+        if chat_id not in active_chats:
+            active_chats.add(chat_id)
+            save_active_chats()
+            print(f"✅ 机器人被添加到新群，自动注册: {chat_id} ({message.chat.title})")
+            # 可选：发送欢迎消息
+            try:
+                bot.send_message(chat_id, "✅ 机器人已成功加入本群，定时提醒功能已自动启用！")
+            except:
+                pass
+    # 如果被移除，可以选择删除（可选）
+    elif new_status in ['left', 'kicked']:
+        if chat_id in active_chats:
+            active_chats.remove(chat_id)
+            save_active_chats()
+            print(f"ℹ️ 机器人被移出群: {chat_id}")
+
+# ====================== /register 命令（备用手动注册） ======================
+@bot.message_handler(commands=['register'])
+def register_chat(message):
+    chat_id = message.chat.id
+    if chat_id not in active_chats:
+        active_chats.add(chat_id)
+        save_active_chats()
+        bot.reply_to(message, f"✅ 已成功注册本群 (ID: {chat_id})，定时提醒已启用")
+        print(f"✅ 通过 /register 命令添加群聊: {chat_id}")
+    else:
+        bot.reply_to(message, "ℹ️ 本群已在提醒列表中")
+
 # ====================== 消息处理函数 ======================
 def handle_message(message):
     chat_id = message.chat.id
     active_chats.add(chat_id)
-    save_active_chats()   # ← 收到消息后立即保存
+    save_active_chats()
 
+    # 提醒检查不受工作时间限制（即使不在工作时间也能触发已过期的提醒）
     check_and_send_reminders(chat_id)
 
     try:
@@ -171,12 +209,15 @@ def webhook():
         update = telebot.types.Update.de_json(request.get_data().decode('utf-8'))
         if update.message:
             handle_message(update.message)
+        # 处理 my_chat_member 更新（自动注册）
+        elif update.my_chat_member:
+            auto_register_on_add(update.my_chat_member)
         return '', 200
     abort(403)
 
 @app.route('/')
 def index():
-    return "Bot is running! Scheduler active. (v4 - 持久化群聊)"
+    return "Bot is running! Scheduler active. (v6 - 自动注册群聊)"
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
