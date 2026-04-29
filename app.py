@@ -73,3 +73,27 @@ def handle_message(message):
     # 干净转发
     try:
         bot.forward_message(chat_id, chat_id, message.message_id)
+        print(f"✅ 已成功转发消息 | Chat: {message.chat.title or 'Private'}")
+    except Exception as e:
+        print(f"转发失败: {e}")
+
+
+# ====================== Webhook ======================
+@app.route(f'/{TOKEN}', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        update = telebot.types.Update.de_json(request.get_data().decode('utf-8'))
+        if update.message:
+            handle_message(update.message)
+        return '', 200
+    abort(403)
+
+
+@app.route('/')
+def index():
+    return "Bot is running!"
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
