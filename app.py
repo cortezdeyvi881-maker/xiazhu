@@ -1,14 +1,15 @@
 # ============================================================
-# Render Starter 计划最终优化版（v10）
+# Render Starter 计划最终优化版（v11）
 # ============================================================
-# 恭喜升级 Starter！这是最终稳定版。
+# 最终稳定版 - 精确到分钟的提醒逻辑
 #
 # 推荐 Start Command：
 #    gunicorn --workers 2 --threads 8 app:app
 #
-# 核心改进（解决你当前问题）：
-# - 提醒只由后台定时器发送（不再在 handle_message 里检查）
-# - 用户消息只负责转发（干净、不再重复提醒）
+# 核心逻辑：
+# - 提醒只在**精确的分钟**触发（例如 19:08 只在 19:08 这个分钟内发一次）
+# - 每15秒检查一次，但只在目标分钟内发送一次
+# - 用户消息只转发，不再触发提醒
 # ============================================================
 
 import os
@@ -95,27 +96,28 @@ except Exception as e:
     END_H, END_M = 23, 0
     PRE_END_H, PRE_END_M = 22, 30
 
-# ====================== 核心提醒函数（只在定时器里调用） ======================
-def check_and_send_reminders(chat_id=None):
+# ====================== 核心提醒函数（精确到分钟，只发送一次） ======================
+def check_and_send_reminders():
     now = datetime.now(TZ)
     today = str(now.date())
+    current_hour = now.hour
+    current_minute = now.minute
 
-    if chat_id is None:
-        chats_to_check = list(active_chats)
-    else:
-        chats_to_check = [chat_id]
-
-    for cid in chats_to_check:
+    for cid in list(active_chats):
         try:
-            if last_start_date.get(cid) != today and \
-               (now.hour > START_H or (now.hour == START_H and now.minute >= START_M)):
+            # === 开始下注提醒（只在精确的 START_H:START_M 分钟内发送一次） ===
+            if (last_start_date.get(cid) != today and 
+                current_hour == START_H and 
+                current_minute == START_M):
                 bot.send_message(cid, "✅ 开始下注")
                 last_start_date[cid] = today
                 save_reminder_status()
                 print(f"[{now.strftime('%H:%M')}] ✅ 已发送：开始下注 → Chat {cid}")
 
-            if last_pre_end_date.get(cid) != today and \
-               (now.hour > PRE_END_H or (now.hour == PRE_END_H and now.minute >= PRE_END_M)):
+            # === 即将结束提醒（只在精确的 PRE_END_H:PRE_END_M 分钟内发送一次） ===
+            if (last_pre_end_date.get(cid) != today and 
+                current_hour == PRE_END_H and 
+                current_minute == PRE_END_M):
                 bot.send_message(cid, "⛔ 即将结束500以上请勿报入")
                 last_pre_end_date[cid] = today
                 save_reminder_status()
@@ -126,7 +128,7 @@ def check_and_send_reminders(chat_id=None):
 
 # ====================== 后台定时器线程 ======================
 def run_scheduler():
-    print("🕒 后台定时器线程已启动，每15秒检查一次提醒时间（v10 最终版）...")
+    print("🕒 后台定时器线程已启动，每15秒检查一次（精确分钟逻辑 v11）...")
     while True:
         try:
             load_reminder_status()
@@ -181,14 +183,11 @@ def status_command(message):
 ⏰ 当前时间: {now.strftime('%H:%M')}"""
     bot.reply_to(message, msg)
 
-# ====================== 消息处理函数（只转发，不再检查提醒） ======================
+# ====================== 消息处理函数（只转发） ======================
 def handle_message(message):
     chat_id = message.chat.id
     active_chats.add(chat_id)
     save_reminder_status()
-
-    # 注意：这里不再调用 check_and_send_reminders
-    # 提醒只由后台定时器负责
 
     try:
         now = datetime.now(TZ)
@@ -227,7 +226,7 @@ def webhook():
 
 @app.route('/')
 def index():
-    return "Bot is running! (v10 - 最终版：提醒只由定时器发送)"
+    return "Bot is running! (v11 - 精确分钟提醒)"
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
