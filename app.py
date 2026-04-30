@@ -1,16 +1,12 @@
 # ============================================================
-# 重要说明（必须先做这一步！）
+# Render Starter 计划优化版（v9）
 # ============================================================
-# Render 默认使用 Gunicorn 多 worker 模式，导致后台定时器线程不可靠。
-# 请在 Render 控制台执行以下操作：
+# 恭喜升级 Starter！现在可以放心增加 worker 数量，性能更好。
+# 推荐 Start Command 设置为：
 #
-# 1. 进入你的服务 → Settings → Build & Deploy
-# 2. 找到 "Start Command"（或 Custom Start Command）
-# 3. 填入以下命令并保存：
+#    gunicorn --workers 2 --threads 8 app:app
 #
-#    gunicorn --workers 1 --threads 4 app:app
-#
-# 如果你不想改 Start Command，也可以不改（v7 已优化支持多 worker）。
+# （Starter 计划资源充足，多 worker 不会出问题）
 # ============================================================
 
 import os
@@ -40,34 +36,49 @@ print("================================\n")
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
+# ====================== 持久化提醒状态 ======================
+REMINDER_STATUS_FILE = "reminder_status.json"
+
+def load_reminder_status():
+    global active_chats, last_start_date, last_pre_end_date
+    if os.path.exists(REMINDER_STATUS_FILE):
+        try:
+            with open(REMINDER_STATUS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                active_chats = set(data.get("active_chats", []))
+                last_start_date = {int(k): v for k, v in data.get("last_start_date", {}).items()}
+                last_pre_end_date = {int(k): v for k, v in data.get("last_pre_end_date", {}).items()}
+                print(f"✅ 已加载提醒状态 | 群聊数: {len(active_chats)} | 已发开始: {len(last_start_date)} | 已发结束: {len(last_pre_end_date)}")
+        except Exception as e:
+            print(f"加载提醒状态失败: {e}")
+            active_chats = set()
+            last_start_date = {}
+            last_pre_end_date = {}
+    else:
+        print("ℹ️  首次启动，提醒状态文件为空")
+        active_chats = set()
+        last_start_date = {}
+        last_pre_end_date = {}
+
+def save_reminder_status():
+    try:
+        data = {
+            "active_chats": list(active_chats),
+            "last_start_date": {str(k): v for k, v in last_start_date.items()},
+            "last_pre_end_date": {str(k): v for k, v in last_pre_end_date.items()}
+        }
+        with open(REMINDER_STATUS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"保存提醒状态失败: {e}")
+
 # ====================== 全局变量 ======================
+active_chats = set()
 last_start_date = {}
 last_pre_end_date = {}
-active_chats = set()
-
-# ====================== 持久化活跃群聊 ======================
-ACTIVE_CHATS_FILE = "active_chats.json"
-
-def load_active_chats():
-    global active_chats
-    if os.path.exists(ACTIVE_CHATS_FILE):
-        try:
-            with open(ACTIVE_CHATS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                active_chats = set(data.get("chats", []))
-        except Exception as e:
-            print(f"加载活跃群聊失败: {e}")
-            active_chats = set()
-
-def save_active_chats():
-    try:
-        with open(ACTIVE_CHATS_FILE, "w", encoding="utf-8") as f:
-            json.dump({"chats": list(active_chats)}, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"保存活跃群聊失败: {e}")
 
 # 启动时加载
-load_active_chats()
+load_reminder_status()
 
 # ====================== 时区 & 时间配置缓存 ======================
 WORK_TIMEZONE_STR = os.environ.get('WORK_TIMEZONE', 'Asia/Shanghai')
@@ -92,7 +103,7 @@ except Exception as e:
 # ====================== 核心提醒函数 ======================
 def check_and_send_reminders(chat_id=None):
     now = datetime.now(TZ)
-    today = now.date()
+    today = str(now.date())
 
     if chat_id is None:
         chats_to_check = list(active_chats)
@@ -105,29 +116,30 @@ def check_and_send_reminders(chat_id=None):
                (now.hour > START_H or (now.hour == START_H and now.minute >= START_M)):
                 bot.send_message(cid, "✅ 开始下注")
                 last_start_date[cid] = today
+                save_reminder_status()
                 print(f"[{now.strftime('%H:%M')}] ✅ 已发送：开始下注 → Chat {cid}")
 
             if last_pre_end_date.get(cid) != today and \
                (now.hour > PRE_END_H or (now.hour == PRE_END_H and now.minute >= PRE_END_M)):
                 bot.send_message(cid, "⛔ 即将结束500以上请勿报入")
                 last_pre_end_date[cid] = today
+                save_reminder_status()
                 print(f"[{now.strftime('%H:%M')}] ⛔ 已发送：即将结束提醒 → Chat {cid}")
 
         except Exception as e:
             print(f"提醒检查出错 (Chat {cid}): {e}")
 
-# ====================== 后台定时器线程（已优化支持多 worker） ======================
+# ====================== 后台定时器线程 ======================
 def run_scheduler():
-    print("🕒 后台定时器线程已启动，每30秒检查一次提醒时间...")
+    print("🕒 后台定时器线程已启动，每15秒检查一次提醒时间（Starter 优化）...")
     while True:
         try:
-            # 每次检查前重新从文件加载最新群聊列表（支持多 worker 环境）
-            load_active_chats()
+            load_reminder_status()
             print(f"⏰ 定时器检查中... 当前活跃群聊数: {len(active_chats)}")
             check_and_send_reminders()
         except Exception as e:
             print(f"定时器出错: {e}")
-        time.sleep(30)
+        time.sleep(15)  # Starter 计划，检查更频繁
 
 scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
 scheduler_thread.start()
@@ -141,7 +153,7 @@ def auto_register_on_add(message: telebot.types.ChatMemberUpdated):
     if new_status in ['member', 'administrator']:
         if chat_id not in active_chats:
             active_chats.add(chat_id)
-            save_active_chats()
+            save_reminder_status()
             print(f"✅ 机器人被添加到新群，自动注册: {chat_id} ({message.chat.title})")
             try:
                 bot.send_message(chat_id, "✅ 机器人已成功加入本群，定时提醒功能已自动启用！")
@@ -149,8 +161,8 @@ def auto_register_on_add(message: telebot.types.ChatMemberUpdated):
                 pass
     elif new_status in ['left', 'kicked']:
         if chat_id in active_chats:
-            active_chats.remove(chat_id)
-            save_active_chats()
+            active_chats.discard(chat_id)
+            save_reminder_status()
             print(f"ℹ️ 机器人被移出群: {chat_id}")
 
 # ====================== /register 命令 ======================
@@ -159,17 +171,33 @@ def register_chat(message):
     chat_id = message.chat.id
     if chat_id not in active_chats:
         active_chats.add(chat_id)
-        save_active_chats()
+        save_reminder_status()
         bot.reply_to(message, f"✅ 已成功注册本群 (ID: {chat_id})，定时提醒已启用")
         print(f"✅ 通过 /register 命令添加群聊: {chat_id}")
     else:
         bot.reply_to(message, "ℹ️ 本群已在提醒列表中")
 
+# ====================== /status 命令（Starter 新增调试命令） ======================
+@bot.message_handler(commands=['status'])
+def status_command(message):
+    chat_id = message.chat.id
+    now = datetime.now(TZ)
+    today = str(now.date())
+    start_sent = last_start_date.get(chat_id) == today
+    pre_end_sent = last_pre_end_date.get(chat_id) == today
+    msg = f"""📊 **机器人状态**
+🟢 活跃群聊: {len(active_chats)} 个
+✅ 开始下注已发送: {'是' if start_sent else '否'}
+⛔ 即将结束已发送: {'是' if pre_end_sent else '否'}
+⏰ 当前时间: {now.strftime('%H:%M')}
+📅 今天: {today}"""
+    bot.reply_to(message, msg)
+
 # ====================== 消息处理函数 ======================
 def handle_message(message):
     chat_id = message.chat.id
     active_chats.add(chat_id)
-    save_active_chats()
+    save_reminder_status()
 
     check_and_send_reminders(chat_id)
 
@@ -210,7 +238,7 @@ def webhook():
 
 @app.route('/')
 def index():
-    return "Bot is running! Scheduler active. (v7 - 多 worker 优化版)"
+    return "Bot is running! Scheduler active. (v9 - Starter 优化版)"
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
