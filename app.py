@@ -1,15 +1,15 @@
 # ============================================================
-# Render Starter 计划最终优化版（v12）
+# Render Starter 计划最终优化版（v13）
 # ============================================================
-# 最终稳定版 - 15秒时间窗口提醒逻辑
+# 最终稳定版 - 自定义提醒消息 + 15秒窗口逻辑
 #
 # 推荐 Start Command：
 #    gunicorn --workers 2 --threads 8 app:app
 #
-# 核心逻辑（按你要求修改）：
-# - 定时器每15秒检查一次
-# - 如果当前时间处在「开始时间」及其后15秒内，且今天还没发过 → 发送提醒（只发一次）
-# - 用户消息只转发，不触发提醒
+# 提醒时间（请在 Render 环境变量中设置）：
+# WORK_START = 18:00   →  ☑️ 开始下注 ☑️
+# WORK_AEND  = 21:18   →  ⚠️ 即将结束 ⚠️ + 投注超500勿报进
+# WORK_END   = 21:22   →  🛑 结束停止 🛑 + 以下都不计入账
 # ============================================================
 
 import os
@@ -38,6 +38,11 @@ print("================================\n")
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
+
+# ====================== 自定义提醒消息（醒目版） ======================
+START_MSG = "☑️ 开始下注 ☑️"
+PRE_END_MSG = "⚠️ 即将结束 ⚠️\n投注超500勿报进"
+END_MSG = "🛑 结束停止 🛑\n以下都不计入账"
 
 # ====================== 持久化提醒状态 ======================
 REMINDER_STATUS_FILE = "reminder_status.json"
@@ -92,44 +97,51 @@ try:
     END_H, END_M = map(int, os.environ['WORK_END'].split(':'))
     PRE_END_H, PRE_END_M = map(int, os.environ['WORK_AEND'].split(':'))
 except Exception as e:
-    START_H, START_M = 9, 0
-    END_H, END_M = 23, 0
-    PRE_END_H, PRE_END_M = 22, 30
+    START_H, START_M = 18, 0
+    END_H, END_M = 21, 22
+    PRE_END_H, PRE_END_M = 21, 18
 
-# ====================== 核心提醒函数（15秒窗口逻辑） ======================
+# ====================== 核心提醒函数（15秒窗口 + 自定义消息） ======================
 def check_and_send_reminders():
     now = datetime.now(TZ)
     today = str(now.date())
 
-    # 计算开始时间的精确时间点
     start_time = now.replace(hour=START_H, minute=START_M, second=0, microsecond=0)
     pre_end_time = now.replace(hour=PRE_END_H, minute=PRE_END_M, second=0, microsecond=0)
+    end_time = now.replace(hour=END_H, minute=END_M, second=0, microsecond=0)
 
     for cid in list(active_chats):
         try:
-            # === 开始下注提醒 ===
-            # 当前时间在 [开始时间, 开始时间+15秒) 范围内，且今天还没发过
+            # === 开始下注提醒（18:00） ===
             if (last_start_date.get(cid) != today and 
                 start_time <= now < start_time + timedelta(seconds=15)):
-                bot.send_message(cid, "✅ 开始下注")
+                bot.send_message(cid, START_MSG)
                 last_start_date[cid] = today
                 save_reminder_status()
                 print(f"[{now.strftime('%H:%M:%S')}] ✅ 已发送：开始下注 → Chat {cid}")
 
-            # === 即将结束提醒 ===
+            # === 即将结束提醒（21:18） ===
             if (last_pre_end_date.get(cid) != today and 
                 pre_end_time <= now < pre_end_time + timedelta(seconds=15)):
-                bot.send_message(cid, "⛔ 即将结束500以上请勿报入")
+                bot.send_message(cid, PRE_END_MSG)
                 last_pre_end_date[cid] = today
                 save_reminder_status()
-                print(f"[{now.strftime('%H:%M:%S')}] ⛔ 已发送：即将结束提醒 → Chat {cid}")
+                print(f"[{now.strftime('%H:%M:%S')}] ⚠️ 已发送：即将结束 → Chat {cid}")
+
+            # === 结束停止提醒（21:22） ===
+            if (last_pre_end_date.get(cid) != today and 
+                end_time <= now < end_time + timedelta(seconds=15)):
+                bot.send_message(cid, END_MSG)
+                last_pre_end_date[cid] = today
+                save_reminder_status()
+                print(f"[{now.strftime('%H:%M:%S')}] 🛑 已发送：结束停止 → Chat {cid}")
 
         except Exception as e:
             print(f"提醒检查出错 (Chat {cid}): {e}")
 
 # ====================== 后台定时器线程 ======================
 def run_scheduler():
-    print("🕒 后台定时器线程已启动，每15秒检查一次（15秒窗口逻辑 v12）...")
+    print("🕒 后台定时器线程已启动，每15秒检查一次（v13 自定义消息版）...")
     while True:
         try:
             load_reminder_status()
@@ -179,8 +191,9 @@ def status_command(message):
     pre_end_sent = last_pre_end_date.get(chat_id) == today
     msg = f"""📊 **机器人状态**
 🟢 活跃群聊: {len(active_chats)} 个
-✅ 开始下注已发送: {'是' if start_sent else '否'}
-⛔ 即将结束已发送: {'是' if pre_end_sent else '否'}
+☑️ 开始下注已发送: {'是' if start_sent else '否'}
+⚠️ 即将结束已发送: {'是' if pre_end_sent else '否'}
+🛑 结束停止已发送: {'是' if pre_end_sent else '否'}
 ⏰ 当前时间: {now.strftime('%H:%M:%S')}"""
     bot.reply_to(message, msg)
 
@@ -227,7 +240,7 @@ def webhook():
 
 @app.route('/')
 def index():
-    return "Bot is running! (v12 - 15秒窗口提醒)"
+    return "Bot is running! (v13 - 自定义醒目提醒消息)"
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
