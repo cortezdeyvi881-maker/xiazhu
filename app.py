@@ -1,21 +1,21 @@
 # ============================================================
-# Render Starter 计划最终优化版（v11）
+# Render Starter 计划最终优化版（v12）
 # ============================================================
-# 最终稳定版 - 精确到分钟的提醒逻辑
+# 最终稳定版 - 15秒时间窗口提醒逻辑
 #
 # 推荐 Start Command：
 #    gunicorn --workers 2 --threads 8 app:app
 #
-# 核心逻辑：
-# - 提醒只在**精确的分钟**触发（例如 19:08 只在 19:08 这个分钟内发一次）
-# - 每15秒检查一次，但只在目标分钟内发送一次
-# - 用户消息只转发，不再触发提醒
+# 核心逻辑（按你要求修改）：
+# - 定时器每15秒检查一次
+# - 如果当前时间处在「开始时间」及其后15秒内，且今天还没发过 → 发送提醒（只发一次）
+# - 用户消息只转发，不触发提醒
 # ============================================================
 
 import os
 import telebot
 from flask import Flask, request, abort
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import threading
 import time
@@ -96,39 +96,40 @@ except Exception as e:
     END_H, END_M = 23, 0
     PRE_END_H, PRE_END_M = 22, 30
 
-# ====================== 核心提醒函数（精确到分钟，只发送一次） ======================
+# ====================== 核心提醒函数（15秒窗口逻辑） ======================
 def check_and_send_reminders():
     now = datetime.now(TZ)
     today = str(now.date())
-    current_hour = now.hour
-    current_minute = now.minute
+
+    # 计算开始时间的精确时间点
+    start_time = now.replace(hour=START_H, minute=START_M, second=0, microsecond=0)
+    pre_end_time = now.replace(hour=PRE_END_H, minute=PRE_END_M, second=0, microsecond=0)
 
     for cid in list(active_chats):
         try:
-            # === 开始下注提醒（只在精确的 START_H:START_M 分钟内发送一次） ===
+            # === 开始下注提醒 ===
+            # 当前时间在 [开始时间, 开始时间+15秒) 范围内，且今天还没发过
             if (last_start_date.get(cid) != today and 
-                current_hour == START_H and 
-                current_minute == START_M):
+                start_time <= now < start_time + timedelta(seconds=15)):
                 bot.send_message(cid, "✅ 开始下注")
                 last_start_date[cid] = today
                 save_reminder_status()
-                print(f"[{now.strftime('%H:%M')}] ✅ 已发送：开始下注 → Chat {cid}")
+                print(f"[{now.strftime('%H:%M:%S')}] ✅ 已发送：开始下注 → Chat {cid}")
 
-            # === 即将结束提醒（只在精确的 PRE_END_H:PRE_END_M 分钟内发送一次） ===
+            # === 即将结束提醒 ===
             if (last_pre_end_date.get(cid) != today and 
-                current_hour == PRE_END_H and 
-                current_minute == PRE_END_M):
+                pre_end_time <= now < pre_end_time + timedelta(seconds=15)):
                 bot.send_message(cid, "⛔ 即将结束500以上请勿报入")
                 last_pre_end_date[cid] = today
                 save_reminder_status()
-                print(f"[{now.strftime('%H:%M')}] ⛔ 已发送：即将结束提醒 → Chat {cid}")
+                print(f"[{now.strftime('%H:%M:%S')}] ⛔ 已发送：即将结束提醒 → Chat {cid}")
 
         except Exception as e:
             print(f"提醒检查出错 (Chat {cid}): {e}")
 
 # ====================== 后台定时器线程 ======================
 def run_scheduler():
-    print("🕒 后台定时器线程已启动，每15秒检查一次（精确分钟逻辑 v11）...")
+    print("🕒 后台定时器线程已启动，每15秒检查一次（15秒窗口逻辑 v12）...")
     while True:
         try:
             load_reminder_status()
@@ -180,7 +181,7 @@ def status_command(message):
 🟢 活跃群聊: {len(active_chats)} 个
 ✅ 开始下注已发送: {'是' if start_sent else '否'}
 ⛔ 即将结束已发送: {'是' if pre_end_sent else '否'}
-⏰ 当前时间: {now.strftime('%H:%M')}"""
+⏰ 当前时间: {now.strftime('%H:%M:%S')}"""
     bot.reply_to(message, msg)
 
 # ====================== 消息处理函数（只转发） ======================
@@ -188,9 +189,6 @@ def handle_message(message):
     chat_id = message.chat.id
     active_chats.add(chat_id)
     save_reminder_status()
-
-    # 注意：这里完全移除了 check_and_send_reminders
-    # 提醒只由后台定时器负责，不会再跟着用户消息发送
 
     try:
         now = datetime.now(TZ)
@@ -229,7 +227,7 @@ def webhook():
 
 @app.route('/')
 def index():
-    return "Bot is running! (v11 - 精确分钟提醒)"
+    return "Bot is running! (v12 - 15秒窗口提醒)"
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
