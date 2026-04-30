@@ -189,6 +189,9 @@ def handle_message(message):
     active_chats.add(chat_id)
     save_reminder_status()
 
+    # 注意：这里完全移除了 check_and_send_reminders
+    # 提醒只由后台定时器负责，不会再跟着用户消息发送
+
     try:
         now = datetime.now(TZ)
         current_h, current_m = now.hour, now.minute
